@@ -10,13 +10,28 @@
   <main>
     <header>
       <div class="logo" aria-hidden="true">🛡</div>
-      <div><h1>Episode Guard</h1><p>Stop early episode switches</p></div>
+      <div><h1>Episode Guard</h1><p>Next Episode prompt protection</p></div>
     </header>
 
     <section class="panel">
       <label class="switchline" for="enabled">
-        <span><strong>Protection enabled</strong><small>Stop unwanted episode changes</small></span>
+        <span><strong>Protection enabled</strong><small>Block scripted Next Episode clicks</small></span>
         <input type="checkbox" id="enabled" checked>
+      </label>
+    </section>
+
+    <section class="panel">
+      <label class="switchline" for="keepPrompt">
+        <span><strong>Keep Next Episode popup open</strong><small>Shields the popup's Close/Dismiss control.<br>Does not block Back, Exit, or rewind.</small></span>
+        <input type="checkbox" id="keepPrompt" checked>
+      </label>
+      <p class="hint">This applies only when the popup can be identified safely. Disney+ may still switch episodes internally.</p>
+    </section>
+
+    <section class="panel">
+      <label class="switchline" for="showExit">
+        <span><strong>Show Exit Player near credits</strong><small>Provides a separate Back/Exit fallback when Disney+ player controls stop responding.</small></span>
+        <input type="checkbox" id="showExit" checked>
       </label>
     </section>
 
@@ -26,23 +41,27 @@
         <option value="never">Always: next episode is manual</option>
         <option value="premature">Only until the current video ends</option>
       </select>
-      <p class="hint">Automatic jumps are blocked. Clicking Next Episode yourself is allowed.</p>
+      <p class="hint">Only scripted button clicks can be blocked. Disney+ internal auto-switching is monitored, not yet reliably prevented.</p>
     </section>
 
     <section class="panel">
       <label class="switchline" for="strict">
-        <span><strong>Protect active video source</strong><small>New: stops silent source changes; turn off if playback stalls</small></span>
+        <span><strong>Block scripted Next Episode clicks</strong><small>Never alters video sources, browser history or manual controls</small></span>
         <input type="checkbox" id="strict" checked>
       </label>
     </section>
 
     <section class="panel stats">
-      <span>Automatic jumps prevented</span><strong id="count">0</strong>
+      <span>Scripted Next clicks blocked</span><strong id="count">0</strong>
+    </section>
+
+    <section class="panel stats">
+      <span>Popup dismissals blocked</span><strong id="promptCount">0</strong>
     </section>
 
     <button id="allowOnce" class="secondary" type="button">Allow next switch for 15 seconds</button>
     <button id="copyLog" class="secondary" type="button">Copy diagnostic report</button>
-    <p class="hint">If Disney+ still switches early, copy the report after it happens. No account details or episode URLs are logged.</p>
+    <p class="hint">The report helps diagnose unexpected episode switches. It logs player event types and timestamps, not account details or episode URLs.</p>
     <p id="message" class="message" role="status"></p>
     <footer>Works only on disneyplus.com • No tracking • Unofficial extension</footer>
   </main>

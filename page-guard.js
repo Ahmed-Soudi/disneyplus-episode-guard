@@ -1,6 +1,6 @@
-/* Disney+ Episode Guard v1.1
- * An independent, early MAIN-world player/SPA guard.
- * Does not access protected streams, license requests, or network traffic.
+/* Disney+ Episode Guard v1.5.0: conservative prompt guard + manual exit fallback.
+ * In particular, DO NOT cancel History API calls or media source setters.
+ * The application's internal state must remain in sync with browser state.
  */
 (() => {
   'use strict';
@@ -8,341 +8,284 @@
   Object.defineProperty(window, '__disneyEpisodeGuardInstalled', { value: true });
 
   const SOURCE = 'disneyplus-episode-guard-v1';
-  const states = { enabled: true, mode: 'never', strict: true };
-  const roots = new Set();
-  const seenVideos = new WeakSet();
-  const player = {
-    hasMedia: false, ended: false, lastMediaAt: 0, lastPlayingAt: 0,
-    video: null, lastTime: 0, lastDuration: 0, lastSrc: ''
-  };
-  let authorizedUntil = 0;
-  let allowOnceUntil = 0;
-  let lastBlockedUrl = '';
-  let lastBlockedAt = 0;
+  const settings = { enabled: true, mode: 'never', strict: true, keepPrompt: true, showExit: true };
+  const watched = new WeakSet();
+  const shadowRoots = new Set();
+  const closePattern = /^(?:close|dismiss|close prompt|dismiss prompt|close next episode|dismiss next episode|×|✕|✖|x|اغلاق|إغلاق|fermer|cerrar|schlie[ßs]en|fechar|chiudi|닫기|閉じる)$/i;
+  const closeIdPattern = /(?:up[-_ ]?next|next[-_ ]?episode)[-_ ]?(?:close|dismiss)|(?:close|dismiss)[-_ ]?(?:up[-_ ]?next|next[-_ ]?episode)/i;
+  const nextPattern = /next\s*(episode|ep\b)|up\s*next|play\s*next|following\s*episode|episode\s*suivant|prochain\s*[ée]pisode|pr[oó]ximo\s*epis[oó]dio|siguiente\s*episodio|n[aä]chste\s*folge|prossimo\s*episodio|volgende\s*aflevering|الحلقة\s*التالية|الحلقة\s*القادمة|次のエピソード|다음\s*에피소드/i;
+  let active = null;
+  let lastUserActionAt = 0;
+  let overrideUntil = 0;
+  let lastUrl = location.href;
+  let lastPromptAt = 0;
   let scanPending = false;
-  let lastScanAt = 0;
-  let toastTimer = 0;
-  let lastTimelineWarning = 0;
+  let exitButton = null;
+  let lastCatalogUrl = null;
+  const EXIT_BUTTON_ID = 'disney-episode-guard-exit';
 
-  const nextText = /next\s*(episode|ep\b)|up\s*next|play\s*next|following\s*episode|episode\s*suivant|prochain\s*[ée]pisode|pr[oó]ximo\s*epis[oó]dio|siguiente\s*episodio|n[aä]chste\s*folge|prossimo\s*episodio|volgende\s*aflevering|الحلقة\s*التالية|الحلقة\s*القادمة|эпизод\s*следующ|次のエピソード|다음\s*에피소드/i;
-  const nextAttr = /next[-_\s]?(episode|ep\b)|up[-_\s]?next|play[-_\s]?next|skip[-_\s]?credits/i;
-  const manualText = /\b(restart|start over|restart episode|episodes|play from beginning)\b/i;
   const now = () => Date.now();
-  const inWatchPage = path => /(?:^|\/)play(?:\/|$)/i.test(path);
-  const getUrl = value => {
-    try { return new URL(value == null ? location.href : String(value), document.baseURI); }
-    catch { return null; }
-  };
-  const finite = value => Number.isFinite(value) && value >= 0 ? Math.round(value * 10) / 10 : null;
-
-  function announce(type, extra = {}) {
-    window.postMessage({ source: SOURCE, type, ...extra }, location.origin);
+  const rounded = n => Number.isFinite(n) && n >= 0 ? Math.round(n * 10) / 10 : null;
+  const watching = () => /(?:^|\/)play(?:\/|$)/i.test(location.pathname);
+  function safeCatalogUrl(url) {
+    if (typeof url !== 'string' || !url.trim()) return null;
+    try {
+      const candidate = new URL(url, location.origin);
+      if (candidate.origin !== location.origin || /(?:^|\/)play(?:\/|$)/i.test(candidate.pathname)) return null;
+      return candidate.origin + candidate.pathname; // Do not retain query parameters.
+    } catch (_) { return null; }
   }
-  function trace(kind, data = {}) {
-    // Deliberately no source URLs, episode IDs, cookies, or account information in logs.
-    announce('trace', { kind, at: new Date().toISOString(), ...data });
+  lastCatalogUrl = safeCatalogUrl(document.referrer);
+  function catalogDestination() {
+    if (lastCatalogUrl) return lastCatalogUrl;
+    const locale = location.pathname.match(/^\/([a-z]{2}-[a-z]{2})(?=\/|$)/i);
+    return location.origin + (locale ? `/${locale[1]}/home` : '/home');
   }
-  function mediaInfo(video = player.video) {
-    if (!video) return {};
-    return { t: finite(video.currentTime), d: finite(video.duration), paused: !!video.paused };
+  function nearCredits() {
+    if (!active) return false;
+    if (active.ended || active.video.ended) return true;
+    const d = Number(active.video.duration);
+    const t = Number(active.video.currentTime);
+    return Number.isFinite(d) && d > 30 && Number.isFinite(t) && t >= d - 20;
   }
-  function warnBlocked(target, reason) {
-    const at = now();
-    if (lastBlockedUrl === target && at - lastBlockedAt <= 1800) return;
-    lastBlockedUrl = target;
-    lastBlockedAt = at;
-    announce('blocked', { reason });
-    trace('blocked', { reason, ...mediaInfo() });
-    showToast('Unwanted episode transition blocked');
-  }
-  function showToast(message) {
-    if (!document.documentElement) return;
-    let toast = document.getElementById('disney-episode-guard-toast');
-    if (!toast) {
-      toast = document.createElement('div');
-      toast.id = 'disney-episode-guard-toast';
-      toast.setAttribute('role', 'status');
-      Object.assign(toast.style, {
-        position: 'fixed', zIndex: '2147483647', bottom: '26px', left: '50%',
-        transform: 'translateX(-50%)', color: '#fff', background: '#132b45',
-        border: '1px solid #4bc9d8', borderRadius: '10px', padding: '10px 16px',
-        font: '600 13px system-ui, sans-serif', boxShadow: '0 10px 30px #0008',
-        pointerEvents: 'none', opacity: '0', transition: 'opacity .2s'
-      });
-      document.documentElement.appendChild(toast);
+  function hasNextPopup() {
+    for (const candidate of document.querySelectorAll('button, [role="button"]')) {
+      if (isCloseControl(candidate) && findNextPrompt(candidate)) return true;
     }
-    toast.textContent = '🛡 ' + message;
-    toast.style.opacity = '1';
-    clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => { toast.style.opacity = '0'; }, 2600);
+    return false;
   }
-
-  function recentMedia() {
-    return player.hasMedia && now() - player.lastMediaAt < 600000;
-  }
-  function isManualOverride() {
-    return now() < authorizedUntil || now() < allowOnceUntil;
-  }
-  function isPremature() { return states.mode !== 'premature' || !player.ended; }
-
-  function shouldBlock(destination) {
-    if (!states.enabled || !isPremature()) return false;
-    const from = getUrl(location.href), to = getUrl(destination);
-    if (!from || !to || from.origin !== to.origin) return false;
-    if (from.pathname === to.pathname) return false;
-    if (!inWatchPage(from.pathname) || !inWatchPage(to.pathname)) return false;
-    if (!recentMedia() || isManualOverride()) return false;
-    return true;
-  }
-  function onAllowedChange(target) {
-    const from = getUrl(location.href), to = getUrl(target);
-    if (!from || !to || from.pathname === to.pathname || !inWatchPage(to.pathname)) return;
-    if (now() < allowOnceUntil) allowOnceUntil = 0;
-    trace('watch-route-allowed', { manual: isManualOverride() });
-    player.hasMedia = false;
-    player.ended = false;
-    player.video = null;
-    player.lastMediaAt = 0;
-    player.lastTime = 0;
-    player.lastSrc = '';
-  }
-  function routeCheck(target, reason) {
-    if (!shouldBlock(target)) { onAllowedChange(target); return false; }
-    warnBlocked('navigation', reason);
-    return true;
-  }
-  for (const method of ['pushState', 'replaceState']) {
-    const original = history[method];
-    if (typeof original !== 'function') continue;
-    history[method] = function (_state, _unused, url) {
-      const target = getUrl(url);
-      if (target && routeCheck(target.href, method)) return;
-      return Reflect.apply(original, this, arguments);
-    };
-  }
-  if (window.navigation && typeof navigation.addEventListener === 'function') {
-    navigation.addEventListener('navigate', event => {
-      const target = event.destination && event.destination.url;
-      if (!target) return;
-      if (event.userInitiated) { authorizedUntil = now() + 3000; return; }
-      if (shouldBlock(target) && event.cancelable) {
+  function updateExitButton() {
+    const show = settings.enabled && settings.showExit && watching() && (nearCredits() || hasNextPopup());
+    if (!show) {
+      if (exitButton) exitButton.style.display = 'none';
+      return;
+    }
+    if (!document.body) return;
+    if (!exitButton) {
+      exitButton = document.createElement('button');
+      exitButton.id = EXIT_BUTTON_ID;
+      exitButton.type = 'button';
+      exitButton.textContent = '← Exit player';
+      exitButton.setAttribute('aria-label', 'Exit Disney+ player to browsing');
+      exitButton.style.cssText = 'position:fixed;bottom:84px;left:20px;z-index:2147483647;pointer-events:auto;padding:9px 13px;border:1px solid #8be9fa;border-radius:9px;background:#112842;color:#fff;font:600 13px system-ui,sans-serif;cursor:pointer;box-shadow:0 3px 14px #0009';
+      exitButton.addEventListener('pointerdown', event => event.stopPropagation());
+      exitButton.addEventListener('click', event => {
+        if (!event.isTrusted) return; // No scripted navigation from page content.
         event.preventDefault();
-        warnBlocked('navigation', 'navigation-api');
-      }
-    }, { capture: true });
+        event.stopImmediatePropagation();
+        trace('exit-button-used', mediaInfo());
+        location.assign(catalogDestination());
+      });
+    }
+    if (!exitButton.isConnected) document.body.appendChild(exitButton);
+    exitButton.style.display = 'block';
   }
+  const isPremature = () => settings.mode === 'never' || !active || !active.ended;
+  const isManual = () => now() - lastUserActionAt < 8000 || now() < overrideUntil;
+  const mediaInfo = () => active ? { t: rounded(active.video.currentTime), d: rounded(active.video.duration), paused: !!active.video.paused } : {};
 
-  function isEpisodeChoice(nodes) {
-    for (const node of nodes) {
-      if (!(node instanceof Element)) continue;
-      const tag = node.localName;
-      const clickable = tag === 'a' || tag === 'button' || node.hasAttribute('role') && /button|link/i.test(node.getAttribute('role') || '');
-      const attrs = [node.id, typeof node.className === 'string' ? node.className : '', node.getAttribute('aria-label'), node.getAttribute('data-testid'), node.getAttribute('title'), node.getAttribute('name')].filter(Boolean).join(' ');
-      if (nextAttr.test(attrs)) return true;
-      if (!clickable) continue;
-      const href = node.getAttribute('href');
-      if (href) {
-        const url = getUrl(href);
-        if (url && inWatchPage(url.pathname) && url.pathname !== location.pathname) return true;
-      }
-      const label = [node.getAttribute('aria-label'), node.getAttribute('title'), node.textContent && node.textContent.slice(0, 150)].filter(Boolean).join(' ');
-      if (nextText.test(label)) return true;
+  function message(type, args = {}) {
+    window.postMessage({ source: SOURCE, type, ...args }, location.origin);
+  }
+  function trace(kind, args = {}) {
+    // Intentionally does not log URLs, episode IDs, captions, account info or media sources.
+    message('trace', { at: new Date().toISOString(), kind, ...args });
+  }
+  function linkedEpisode(node) {
+    for (let e = node; e && e.nodeType === 1; e = e.parentElement) {
+      if (!['BUTTON', 'A'].includes(e.tagName) && !/^(button|link)$/i.test(e.getAttribute('role') || '')) continue;
+      const value = [e.getAttribute('aria-label'), e.getAttribute('title'), e.getAttribute('data-testid'), e.textContent?.slice(0, 110)].filter(Boolean).join(' ');
+      return nextPattern.test(value);
     }
     return false;
   }
-  function isManualPlayerControl(nodes) {
-    for (const node of nodes) {
-      if (!(node instanceof Element)) continue;
-      const attrs = [node.getAttribute('aria-label'), node.getAttribute('title'), node.textContent && node.textContent.slice(0, 70)].filter(Boolean).join(' ');
-      if (manualText.test(attrs) && ['button', 'a'].includes(node.localName)) return true;
-    }
-    return false;
+  // Guard only a locally identified Next Episode prompt. Avoid broad containers
+  // (player / page / header) so the player's Back/Exit/rewind actions are untouched.
+  function controlText(element) {
+    return [element.getAttribute('aria-label'), element.getAttribute('title'),
+      element.getAttribute('data-testid'), (element.textContent || '').trim().slice(0, 110)]
+      .filter(Boolean).join(' ').trim();
   }
-  function onInput(event) {
-    if (!event.isTrusted) return;
-    if (event.type === 'keydown' && !['Enter', ' ', 'Spacebar'].includes(event.key)) return;
-    if (isEpisodeChoice(event.composedPath()) || isManualPlayerControl(event.composedPath())) {
-      authorizedUntil = now() + 4000;
-      trace('manual-control');
-    }
+  function isCloseControl(element) {
+    if (!element || element.nodeType !== 1) return false;
+    const label = (element.getAttribute('aria-label') || element.getAttribute('title') ||
+      (element.textContent || '').trim()).trim();
+    const testid = element.getAttribute('data-testid') || '';
+    return closePattern.test(label) || closeIdPattern.test(testid);
   }
-  function onClick(event) {
-    if (!recentMedia() || !states.enabled) return;
-    const nextChoice = isEpisodeChoice(event.composedPath());
-    if (!nextChoice) return;
-    if (event.isTrusted) { authorizedUntil = now() + 4000; return; }
+  function isNextControl(element) {
+    return element && element.nodeType === 1 && nextPattern.test(controlText(element));
+  }
+  function nearestControl(node) {
+    for (let el = node; el && el.nodeType === 1; el = el.parentElement) {
+      if (el.matches?.('button, a, [role="button"]')) return el;
+    }
+    return null;
+  }
+  function findNextPrompt(closeControl) {
+    // A close button is protected only if a nearby, small popup also contains
+    // a distinct Next Episode button. Refuse if a video, nav, or Back button is
+    // inside that ancestor: it would be the full player instead of a prompt.
+    let root = closeControl.parentElement;
+    for (let depth = 0; root && depth < 5; depth++, root = root.parentElement) {
+      if (['BODY', 'HTML', 'MAIN', 'NAV', 'HEADER'].includes(root.tagName)) break;
+      if (!root.querySelectorAll) continue;
+      const buttons = [...root.querySelectorAll('button, a, [role="button"]')];
+      if (buttons.length > 10 || root.querySelector('video, nav')) break;
+      if (buttons.some(button => /^(?:back|exit|go back|return)$/i.test(
+        (button.getAttribute('aria-label') || button.getAttribute('title') || '').trim()))) break;
+      if (buttons.some(button => button !== closeControl && isNextControl(button))) return root;
+    }
+    return null;
+  }
+  function blockPromptDismiss(event) {
+    if (!settings.enabled || !settings.keepPrompt || !watching()) return false;
+    const path = typeof event.composedPath === 'function' ? event.composedPath() : [event.target];
+    // In shadow DOM, use the composed path instead of an outside retargeted node.
+    const target = path.find(node => node && node.nodeType === 1 && nearestControl(node));
+    const control = target && nearestControl(target);
+    if (!control || control.id === EXIT_BUTTON_ID || !isCloseControl(control) || !findNextPrompt(control)) return false;
+    // Disney's top-left player Back can be an X/Close control. Never intercept it.
+    const rect = typeof control.getBoundingClientRect === 'function' ? control.getBoundingClientRect() : null;
+    if (rect && rect.width > 0 && rect.height > 0 &&
+        rect.left < window.innerWidth * .28 && rect.top < window.innerHeight * .3) return false;
     event.preventDefault();
     event.stopImmediatePropagation();
-    warnBlocked('synthetic-next-click', 'synthetic-click');
+    if (event.type === 'click') {
+      message('blocked', { reason: 'prompt-dismiss' });
+      trace('prompt-dismiss-blocked', mediaInfo());
+    }
+    return true;
   }
-  function listenOnRoot(root) {
-    root.addEventListener('pointerdown', onInput, true);
-    root.addEventListener('keydown', onInput, true);
+  function onClick(event) {
+    if (blockPromptDismiss(event)) return;
+    if (!settings.enabled || !settings.strict || !watching() || !active || !isPremature() || now() < overrideUntil) return;
+    if (event.isTrusted) return; // Humans can navigate Back, rewind, or choose Next Episode.
+    const path = typeof event.composedPath === 'function' ? event.composedPath() : [event.target];
+    if (!path.some(node => node && node.nodeType === 1 && linkedEpisode(node))) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    message('blocked', { reason: 'synthetic-next-click' });
+    trace('blocked-scripted-next', { ...mediaInfo() });
+  }
+  function onUserInput(event) {
+    if (event.isTrusted) lastUserActionAt = now();
+  }
+  function observeInput(root) {
+    // Only observes human input; never cancels it. Capture early to classify transitions.
+    root.addEventListener('pointerdown', onUserInput, true);
+    root.addEventListener('keydown', onUserInput, true);
     root.addEventListener('click', onClick, true);
   }
-  listenOnRoot(window);
+  observeInput(window);
 
-  // New in v1.1: protect the already-playing media element. Disney+ can change
-  // episodes internally without a URL change or a visible Next Episode dialog.
-  function canProtectMedia(video) {
-    if (!states.enabled || !states.strict || !isPremature() || isManualOverride()) return false;
-    if (!inWatchPage(location.pathname) || video !== player.video || !recentMedia() || player.ended) return false;
-    const liveT = Number(video.currentTime), liveD = Number(video.duration);
-    // During an internal handoff, Disney+ might clear currentTime/duration
-    // BEFORE updating src. Retain the last measured progress for this case.
-    const resetBeforeSource = player.lastTime > 8 && (!Number.isFinite(liveT) || liveT < 2);
-    const t = resetBeforeSource ? player.lastTime : liveT;
-    const d = Number.isFinite(liveD) && liveD > 0 ? liveD : player.lastDuration;
-    if (!Number.isFinite(t) || !Number.isFinite(d) || t < 8 || d < 20 || t >= d - 0.2) return false;
-    // Only lock once actual playback has been observed; a 2-minute idle pause
-    // should not prevent the site recovering from a network failure.
-    if (now() - player.lastPlayingAt > 120000) return false;
-    return true;
-  }
-  function sourceChanging(video, before, after, reason) {
-    if (!canProtectMedia(video)) return false;
-    if ((before || '') === (after || '')) return false;
-    // MediaSource teardown may already have emptied currentSrc.
-    before = before || (video === player.video ? player.lastSrc : '');
-    if (!before) return false; // Never block initial video attachment.
-    warnBlocked('media-source', reason);
-    return true;
-  }
-  function patchMediaSetter(prop) {
-    const proto = window.HTMLMediaElement && window.HTMLMediaElement.prototype;
-    if (!proto) return;
-    let owner = proto;
-    while (owner && !Object.getOwnPropertyDescriptor(owner, prop)) owner = Object.getPrototypeOf(owner);
-    if (!owner) return;
-    const desc = Object.getOwnPropertyDescriptor(owner, prop);
-    if (!desc || !desc.configurable || typeof desc.set !== 'function' || typeof desc.get !== 'function') return;
-    Object.defineProperty(owner, prop, {
-      ...desc,
-      set(value) {
-        if (this.localName === 'video' && sourceChanging(this, desc.get.call(this), value, `${prop}-setter`)) return;
-        return desc.set.call(this, value);
-      }
-    });
-  }
-  patchMediaSetter('src');
-  patchMediaSetter('srcObject');
+  function register(video) {
+    if (watched.has(video)) return;
+    watched.add(video);
+    trace('video-found');
+    const state = { video, lastTime: 0, duration: 0, ended: !!video.ended, src: video.currentSrc || '', progressTraceAt: 0 };
+    if (!active || !active.video.isConnected || !active.video.paused) active = state;
 
-  const nativeSetAttribute = Element.prototype.setAttribute;
-  Element.prototype.setAttribute = function (name, value) {
-    if (this.localName === 'video' && String(name).toLowerCase() === 'src' &&
-        sourceChanging(this, this.getAttribute('src') || this.currentSrc, String(value), 'setAttribute-src')) return;
-    return Reflect.apply(nativeSetAttribute, this, arguments);
-  };
-  const nativeRemoveAttribute = Element.prototype.removeAttribute;
-  Element.prototype.removeAttribute = function (name) {
-    if (this.localName === 'video' && String(name).toLowerCase() === 'src' &&
-        sourceChanging(this, this.getAttribute('src') || this.currentSrc, '', 'removeAttribute-src')) return;
-    return Reflect.apply(nativeRemoveAttribute, this, arguments);
-  };
-
-  function noteVideo(video) {
-    if (!inWatchPage(location.pathname)) return;
-    const replaced = player.video && player.video !== video && recentMedia() && !player.ended;
-    if (replaced) trace('video-replaced', { ...mediaInfo(player.video), newVideo: true, manual: isManualOverride() });
-    player.video = video;
-    player.hasMedia = true;
-    player.ended = !!video.ended;
-    player.lastMediaAt = now();
-    if (!video.paused && !video.ended) player.lastPlayingAt = now();
-    const t = Number(video.currentTime), d = Number(video.duration);
-    // Preserve last good position/source during a suspicious internal reset.
-    if (Number.isFinite(t) && (t > 2 || player.lastTime < 8 || player.video !== video)) player.lastTime = t;
-    if (Number.isFinite(d) && d > 20) player.lastDuration = d;
-    player.lastSrc = video.currentSrc || video.src || player.lastSrc;
-  }
-  function inspectTimeline(video) {
-    if (video !== player.video) return;
-    const t = Number(video.currentTime), d = Number(video.duration);
-    if (Number.isFinite(t) && player.lastTime > 20 && t < 4 && player.lastTime - t > 20 &&
-        !isManualOverride() && now() - lastTimelineWarning > 2000) {
-      lastTimelineWarning = now();
-      trace('unexpected-timeline-reset', { from: finite(player.lastTime), to: finite(t), d: finite(d) });
-    }
-    if (Number.isFinite(d) && player.lastDuration > 20 && Math.abs(d - player.lastDuration) > 12 &&
-        !isManualOverride() && now() - lastTimelineWarning > 2000) {
-      lastTimelineWarning = now();
-      trace('duration-changed', { from: finite(player.lastDuration), to: finite(d) });
-    }
-  }
-  function registerVideo(video) {
-    if (seenVideos.has(video)) return;
-    seenVideos.add(video);
-    trace('video-detected');
-    for (const name of ['playing', 'play', 'timeupdate', 'loadedmetadata', 'pause', 'ended', 'emptied', 'loadstart', 'durationchange', 'seeking']) {
-      video.addEventListener(name, () => {
-        if (name === 'ended') {
-          if (player.video === video) { player.ended = true; player.lastMediaAt = now(); trace('ended', mediaInfo(video)); }
-        } else if (name === 'playing' || name === 'play' || name === 'timeupdate') {
-          inspectTimeline(video);
-          if (!video.ended) noteVideo(video);
-        } else if (name === 'loadedmetadata') {
-          trace('metadata', mediaInfo(video));
-          if (!video.paused) noteVideo(video);
-        } else if (name === 'emptied' || name === 'loadstart') {
-          if (video === player.video && recentMedia()) trace(name, mediaInfo(video));
-        } else if (name === 'durationchange') {
-          inspectTimeline(video);
+    function update(eventType) {
+      if (!watching()) return;
+      const t = Number(video.currentTime);
+      const d = Number(video.duration);
+      const src = video.currentSrc || '';
+      if (eventType === 'playing' || eventType === 'play' || (eventType === 'timeupdate' && !video.paused)) {
+        if (active && active.video !== video && !active.ended && active.lastTime > 8) {
+          trace('video-replaced', { t: rounded(active.lastTime), d: rounded(active.duration), manual: isManual() });
         }
-      });
+        active = state;
+      }
+      if (active === state) {
+        if (eventType === 'ended') {
+          state.ended = true;
+          trace('video-ended', { t: rounded(t), d: rounded(d) });
+        }
+        if (src && state.src && src !== state.src && state.lastTime > 8 && !state.ended) {
+          trace('source-changed', { t: rounded(state.lastTime), d: rounded(state.duration), manual: isManual() });
+        }
+        if (Number.isFinite(t) && state.lastTime > 20 && t < 3 && state.lastTime - t > 20 && !isManual()) {
+          trace('timeline-reset', { from: rounded(state.lastTime), to: rounded(t), d: rounded(d) });
+        }
+        if (Number.isFinite(t) && t >= 0) state.lastTime = t;
+        if (Number.isFinite(d) && d > 0) state.duration = d;
+        if (src) state.src = src;
+        if (eventType === 'playing') state.ended = false;
+        if (eventType === 'timeupdate' || eventType === 'ended') updateExitButton();
+        if (eventType === 'timeupdate' && now() - state.progressTraceAt > 20000) {
+          state.progressTraceAt = now();
+          trace('progress', { t: rounded(t), d: rounded(d) });
+        }
+      }
     }
-    if (!video.paused && video.readyState > 0) noteVideo(video);
+    for (const type of ['play', 'playing', 'timeupdate', 'ended', 'emptied', 'loadstart', 'loadedmetadata', 'durationchange']) {
+      video.addEventListener(type, () => update(type));
+    }
+    if (!video.paused) update('playing');
   }
-  function walkVideos(root, depth = 0) {
-    if (depth > 12 || !root.querySelectorAll) return;
-    for (const element of root.querySelectorAll('*')) {
-      if (element.localName === 'video') registerVideo(element);
-      if (element.shadowRoot) captureRoot(element.shadowRoot);
+
+  function scanVideos(root) {
+    if (!root.querySelectorAll) return;
+    for (const video of root.querySelectorAll('video')) register(video);
+    // Look for shadow roots without patching attachShadow (which can break player components).
+    for (const el of root.querySelectorAll('*')) {
+      if (el.shadowRoot && !shadowRoots.has(el.shadowRoot)) {
+        shadowRoots.add(el.shadowRoot);
+        observeInput(el.shadowRoot);
+        scanVideos(el.shadowRoot);
+      }
     }
   }
   function scan() {
     scanPending = false;
-    lastScanAt = now();
-    if (!inWatchPage(location.pathname)) return;
-    walkVideos(document);
-    for (const root of roots) walkVideos(root);
+    if (!watching()) return;
+    scanVideos(document);
+    for (const root of shadowRoots) scanVideos(root);
+    const popup = [...document.querySelectorAll('button, [role="button"]')]
+      .some(e => nextPattern.test([e.getAttribute('aria-label'), e.textContent?.slice(0, 85)].filter(Boolean).join(' ')));
+    updateExitButton();
+    if (popup && now() - lastPromptAt > 30000) {
+      lastPromptAt = now();
+      trace('next-control-visible', mediaInfo());
+    }
   }
-  function queueScan() {
+  function scheduleScan() {
     if (scanPending) return;
     scanPending = true;
-    setTimeout(scan, Math.max(200, 1500 - (now() - lastScanAt)));
+    setTimeout(scan, 350);
   }
-  function captureRoot(root) {
-    if (roots.has(root)) return;
-    roots.add(root);
-    listenOnRoot(root);
-    new MutationObserver(queueScan).observe(root, { childList: true, subtree: true });
-    queueScan();
-  }
-  const attachShadow = Element.prototype.attachShadow;
-  if (typeof attachShadow === 'function') {
-    Element.prototype.attachShadow = function () {
-      const root = Reflect.apply(attachShadow, this, arguments);
-      captureRoot(root);
-      return root;
-    };
-  }
-  new MutationObserver(queueScan).observe(document, { childList: true, subtree: true });
-  setInterval(queueScan, 3000);
-  queueScan();
+  new MutationObserver(scheduleScan).observe(document, { childList: true, subtree: true });
+  setInterval(() => {
+    if (location.href !== lastUrl) {
+      const wasWatching = /(?:^|\/)play(?:\/|$)/i.test(new URL(lastUrl).pathname);
+      const stillWatching = watching();
+      if (!wasWatching && stillWatching) lastCatalogUrl = safeCatalogUrl(lastUrl) || lastCatalogUrl;
+      if (wasWatching) trace('route-changed', { watchToWatch: stillWatching, manual: isManual(), ...mediaInfo() });
+      lastUrl = location.href;
+      if (!stillWatching) active = null;
+      updateExitButton();
+    }
+    scheduleScan();
+  }, 1500);
+  scheduleScan();
+
   window.addEventListener('message', event => {
     if (event.source !== window || event.origin !== location.origin) return;
-    const msg = event.data;
-    if (!msg || msg.source !== SOURCE) return;
-    if (msg.type === 'config') {
-      states.enabled = msg.enabled !== false;
-      states.mode = msg.mode === 'premature' ? 'premature' : 'never';
-      states.strict = msg.strict !== false;
-    } else if (msg.type === 'allow-once') {
-      allowOnceUntil = now() + 15000;
+    const data = event.data;
+    if (!data || data.source !== SOURCE) return;
+    if (data.type === 'config') {
+      settings.enabled = data.enabled !== false;
+      settings.mode = data.mode === 'premature' ? 'premature' : 'never';
+      settings.strict = data.strict !== false;
+      settings.keepPrompt = data.keepPrompt !== false;
+      settings.showExit = data.showExit !== false;
+      updateExitButton();
+    } else if (data.type === 'allow-once') {
+      overrideUntil = now() + 15000;
       trace('temporary-override');
-      showToast('Next episode allowed for 15 seconds');
     }
   });
-  trace('guard-ready', { version: '1.1.0' });
-  announce('page-ready');
+  trace('guard-ready', { version: '1.5.0', strategy: 'popup-dismiss-shield-plus-manual-exit' });
+  message('page-ready');
 })();

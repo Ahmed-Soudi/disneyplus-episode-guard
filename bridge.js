@@ -2,18 +2,20 @@
 (() => {
   'use strict';
   const SOURCE = 'disneyplus-episode-guard-v1';
-  const DEFAULTS = { enabled: true, mode: 'never', strict: true, blockedCount: 0, diagnostics: [] };
+  const DEFAULTS = { enabled: true, mode: 'never', strict: true, keepPrompt: true, showExit: true, scriptedCountV13: 0, promptDismissV14: 0, diagnosticsV13: [] };
   function sendConfig(items) {
     window.postMessage({
       source: SOURCE, type: 'config',
       enabled: items.enabled !== false,
       mode: items.mode === 'premature' ? 'premature' : 'never',
-      strict: items.strict !== false
+      strict: items.strict !== false,
+      keepPrompt: items.keepPrompt !== false,
+      showExit: items.showExit !== false
     }, location.origin);
   }
   chrome.storage.local.get(DEFAULTS, sendConfig);
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area !== 'local' || !('enabled' in changes || 'mode' in changes || 'strict' in changes)) return;
+    if (area !== 'local' || !('enabled' in changes || 'mode' in changes || 'strict' in changes || 'keepPrompt' in changes || 'showExit' in changes)) return;
     chrome.storage.local.get(DEFAULTS, sendConfig);
   });
 
@@ -23,8 +25,8 @@
   function queueLog(msg) {
     pending.push({ at: msg.at || new Date().toISOString(), kind: msg.kind || 'unknown',
       reason: msg.reason || undefined, t: msg.t, d: msg.d,
-      from: msg.from, to: msg.to, newVideo: msg.newVideo,
-      manual: msg.manual, version: msg.version });
+      from: msg.from, to: msg.to, newVideo: msg.newVideo, watchToWatch: msg.watchToWatch,
+      paused: msg.paused, manual: msg.manual, version: msg.version, strategy: msg.strategy });
     if (pending.length > 150) pending = pending.slice(-150);
     if (!flushTimer) flushTimer = setTimeout(flush, 250);
   }
@@ -36,8 +38,8 @@
     try {
       while (pending.length) {
         const batch = pending.splice(0, 150);
-        const { diagnostics = [] } = await chrome.storage.local.get({ diagnostics: [] });
-        await chrome.storage.local.set({ diagnostics: [...diagnostics, ...batch].slice(-100) });
+        const { diagnosticsV13 = [] } = await chrome.storage.local.get({ diagnosticsV13: [] });
+        await chrome.storage.local.set({ diagnosticsV13: [...diagnosticsV13, ...batch].slice(-150) });
       }
     } catch (_error) {
       // Storage may be unavailable when the tab closes; do not break playback.
@@ -58,8 +60,9 @@
       const at = Date.now();
       if (at - lastCountAt < 400) return;
       lastCountAt = at;
-      chrome.storage.local.get({ blockedCount: 0 }, result => {
-        chrome.storage.local.set({ blockedCount: result.blockedCount + 1 });
+      const key = msg.reason === 'prompt-dismiss' ? 'promptDismissV14' : 'scriptedCountV13';
+      chrome.storage.local.get({ [key]: 0 }, result => {
+        chrome.storage.local.set({ [key]: result[key] + 1 });
       });
     }
   });

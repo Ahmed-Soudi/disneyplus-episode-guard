@@ -1,55 +1,46 @@
-# Disney+ Episode Guard v1.1.0
+# Disney+ Episode Guard
 
-An independent, experimental Chrome/Chromium extension to prevent Disney+ from unexpectedly switching to the next episode **before the current episode ends**, including cases where Disney+ profile **Autoplay = Off** has no effect.
+Experimental, unofficial Chrome/Chromium extension that attempts to prevent premature Disney+ next-episode changes. No DRM/network interception, tracking, or media downloading.
 
-This release is **not tested against a logged-in Disney+ player**, and cannot guarantee that it stops the problem. Disney+ sometimes transitions between episodes entirely inside its player, without a URL change or a Next Episode popup.
+## Version 1.5.0
 
-## Upgrade / install
+- Adds an **Exit player** fallback button near the end of playback or when a recognized Next Episode prompt appears. This is a deliberate navigation action separate from Disney+'s potentially unresponsive player Back/Exit control. It returns to the last same-origin browsing page if known, or to the Disney+ home page.
+- Stops intercepting `pointerdown` on popup controls. This should avoid suppressing native Back/Exit input.
+- Avoids blocking top-left X/Close buttons, which can represent the **player Back control** rather than the Next Episode popup dismiss button.
+- Keeps the conservative v1.4 popup-dismiss protection (only when a small, distinct Next Episode popup can be identified) and the scripted Next Episode click check.
+- Never blocks `history.pushState`/`replaceState`, video media sources, rewind, keyboard input, or the native player Back/Exit navigation.
+- Adds the **Show Exit Player near credits** setting (enabled by default).
 
-1. Extract `disneyplus-episode-guard-v1.1.0.zip` into a permanent folder.
-2. Open `chrome://extensions`, enable Developer mode.
-3. **Remove or turn off Episode Guard v1.0.0 first** so it does not run at the same time. Keep the separate **Disney+ Link Redirector** enabled if needed; it is a different extension.
-4. Choose **Load unpacked** and select the extracted folder containing `manifest.json`.
-5. Refresh the Disney+ tab before trying the episode again.
-6. From the Episode Guard popup, enable **Protection** and **Protect active video source** (on by default).
+### Known limitations
 
-## What changed in v1.1.0
+- This is not a verified fix for Disney+'s internal episode transition logic. The popup workaround is based on a [user report](https://bugzilla.mozilla.org/show_bug.cgi?id=2069771) that leaving the popup open stopped a premature skip.
+- The fallback Exit button is a workaround, **not** a repair of Disney+'s Back button. It is visible only when nearing the end of the video or a recognized Next Episode popup appears; it may be hidden by browser fullscreen or unknown Disney+ UI variants.
+- The extension has not been tested in a signed-in Disney+ streaming session. Automated tests cover simulated browser/player behavior only.
+- A default home URL may differ between locales. The Exit button will prefer the last known Disney+ browsing page whenever possible.
 
-- Added interception of `video.src`, `video.srcObject`, `setAttribute('src')`, and `removeAttribute('src')` for an *already playing* video while it has not ended.
-- Detects suspicious timeline resets, metadata changes, and video-element replacement to help diagnose internal player episode changes.
-- Retains recent progress/source information if the site clears the video element before changing its source.
-- Maintains the earlier automatic navigation / programmatic Next Episode click guard.
-- Includes **Copy diagnostic report** in the popup. Diagnostics are kept locally and contain only event types, relative video time/duration, and timestamps; no content URLs, profile data, media streams, or account credentials are recorded.
+## Install / update
+
+1. Use the v1.5.0 ZIP or clone this repository. Extract into a permanent folder.
+2. Open `chrome://extensions`, enable Developer mode, and **disable/remove older Episode Guard versions**.
+3. Click **Load unpacked** and select the folder with `manifest.json`, or reload an existing unpacked installation after replacing the files.
+4. Refresh your Disney+ tab.
 
 ## Settings
 
-- **Protection enabled:** Turns both protections on or off.
-- **When to block:** `Always: next episode is manual` (default) or `Only until the current video ends`.
-- **Protect active video source:** Aggressive experimental feature (default on). If Disney+ playback freezes, buffers indefinitely, or shows an error, turn this off. Some player recovery actions legitimately replace the source.
-- **Allow next switch for 15 seconds:** Temporarily allows a programmatic episode transition if the manual button does not work.
-- **Copy diagnostic report:** After observing a failure, copy the report and share it with the maintainer for targeted debugging. It contains only safe video lifecycle telemetry, not complete URLs.
+- **Protection enabled**: overall enable/disable.
+- **Keep Next Episode popup open**: block clicks on a safely recognized Next Episode popup's Close/Dismiss button, not the player Back button.
+- **Show Exit Player near credits**: display a small fallback button when the video is almost over or a next-episode prompt is identified.
+- **Block scripted Next Episode clicks**: restrict untrusted programmatic clicks on Next Episode controls.
+- **When to block**: always or only until the HTML video reports `ended` (applies to scripted clicks, not Disney+ internal transitions).
+- **Copy diagnostic report**: copies locally recorded playback events and timestamps; no URLs, streaming data, account identifiers or tokens.
 
-## How the guard works and known gaps
-
-The extension runs at `document_start` in Chrome's `MAIN` world on disneyplus.com.
-
-- In the initial page version, the only attempted protections were route changes and synthetic Next Episode clicks. Neither can catch a transition entirely within an already-open media player.
-- This version also watches the HTML5 video element and rejects some unwanted source swaps while an unfinished episode has been playing.
-- A streaming player may instead reuse the *same MediaSource* or replace media elements without touching those setters. The browser cannot reliably recognize the episode identity from standard HTMLVideoElement properties. Such cases may still bypass the guard.
-- It does **not** intercept or alter streaming requests, DRM sessions, protected media, or license checks. It cannot force Disney+'s internal software to keep playing a video if Disney+ ends it via proprietary logic.
-- The strict feature could block a legitimate player recovery. Disable that feature if playback breaks.
-
-All storage is local to your browser. No telemetry is uploaded. No media is downloaded or recorded. This is unofficial and is not affiliated with Disney.
-
-## Testing
+## Development
 
 ```bash
+node --check page-guard.js
+node --check bridge.js
+node --check popup.js
 node tests/guard.test.cjs
 ```
 
-15 simulated tests cover route navigation, manual vs synthetic clicks, source changes, optional mode, and media-reset behavior. They do not simulate Disney+'s proprietary playback engine.
-
-## Version history
-
-- v1.1.0 — November 13, 2026 — Media source protection and diagnostic report.
-- v1.0.0 — November 13, 2026 — Early navigation guard.
+The MIT license applies. This project is not affiliated with Disney.
