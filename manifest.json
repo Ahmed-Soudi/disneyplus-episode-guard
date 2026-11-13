@@ -3,7 +3,7 @@
   "name": "Disney+ Episode Guard",
   "short_name": "Episode Guard",
   "version": "1.5.0",
-  "description": "Keeps Disney+ Next Episode prompts open, blocks some scripted Next clicks, and provides an independent Exit Player fallback near credits.",
+  "description": "Helps keep Disney+ Next Episode prompts open and adds a manual Exit Player fallback near the end of playback.",
   "minimum_chrome_version": "111",
   "permissions": [
     "storage"
