@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Disney+ Episode Guard</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main>
+    <header>
+      <div class="logo" aria-hidden="true">🛡</div>
+      <div><h1>Episode Guard</h1><p>Stop early episode switches</p></div>
+    </header>
+
+    <section class="panel">
+      <label class="switchline" for="enabled">
+        <span><strong>Protection enabled</strong><small>Stop unwanted episode changes</small></span>
+        <input type="checkbox" id="enabled" checked>
+      </label>
+    </section>
+
+    <section class="panel details">
+      <label for="mode">When to block</label>
+      <select id="mode">
+        <option value="never">Always: next episode is manual</option>
+        <option value="premature">Only until the current video ends</option>
+      </select>
+      <p class="hint">Automatic jumps are blocked. Clicking Next Episode yourself is allowed.</p>
+    </section>
+
+    <section class="panel">
+      <label class="switchline" for="strict">
+        <span><strong>Protect active video source</strong><small>New: stops silent source changes; turn off if playback stalls</small></span>
+        <input type="checkbox" id="strict" checked>
+      </label>
+    </section>
+
+    <section class="panel stats">
+      <span>Automatic jumps prevented</span><strong id="count">0</strong>
+    </section>
+
+    <button id="allowOnce" class="secondary" type="button">Allow next switch for 15 seconds</button>
+    <button id="copyLog" class="secondary" type="button">Copy diagnostic report</button>
+    <p class="hint">If Disney+ still switches early, copy the report after it happens. No account details or episode URLs are logged.</p>
+    <p id="message" class="message" role="status"></p>
+    <footer>Works only on disneyplus.com • No tracking • Unofficial extension</footer>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>

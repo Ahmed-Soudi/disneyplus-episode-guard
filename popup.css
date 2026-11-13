@@ -1,0 +1,29 @@
+:root { color-scheme: dark; }
+* { box-sizing: border-box; }
+body { width: 356px; min-height: 338px; margin: 0; background: #080f20; color: #eff6ff; font: 13px/1.5 system-ui, -apple-system, Segoe UI, sans-serif; }
+main { padding: 18px; }
+header { display: flex; align-items: center; gap: 11px; margin-bottom: 17px; }
+.logo { width: 44px; height: 44px; display: grid; place-items: center; font-size: 23px; border-radius: 12px; background: linear-gradient(140deg, #133c62, #255a78); }
+h1 { font-size: 17px; letter-spacing: -.3px; margin: 0; }
+header p { margin: 2px 0 0; color: #adc2dc; font-size: 12px; }
+.panel { background: #11203a; border: 1px solid #253d5a; border-radius: 12px; padding: 13px; margin: 0 0 10px; }
+.switchline, .stats { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.switchline { cursor: pointer; }
+.switchline span { display: flex; flex-direction: column; }
+strong { font-size: 13px; }
+small { color: #9bb0cd; font-size: 11px; margin-top: 3px; }
+input[type="checkbox"] { appearance: none; width: 38px; height: 22px; margin: 0; border-radius: 20px; border: 1px solid #60708b; background: #334159; position: relative; cursor: pointer; flex-shrink: 0; }
+input[type="checkbox"]::before { content: ''; position: absolute; top: 2px; left: 2px; height: 16px; width: 16px; border-radius: 50%; background: #e8effc; transition: transform .13s; }
+input[type="checkbox"]:checked { background: #00a5c7; border-color: #23cce8; }
+input[type="checkbox"]:checked::before { transform: translateX(16px); }
+.details label { display: block; margin-bottom: 7px; font-weight: 650; }
+select { display: block; width: 100%; border-radius: 8px; color: #e7f4ff; background: #0a172c; border: 1px solid #425777; padding: 10px; font: inherit; }
+.hint { color: #a3b7d4; font-size: 11px; margin: 8px 0 0; }
+.stats { color: #b6c6dc; }
+.stats strong { color: #a2edf1; font-size: 20px; font-variant-numeric: tabular-nums; }
+button { width: 100%; display: block; padding: 10px 9px; border-radius: 9px; border: 1px solid #3c8199; cursor: pointer; font-weight: 650; }
+.secondary { color: #d8f8ff; background: #143a55; }
+button:hover { background: #1c4b69; }
+button:disabled { cursor: not-allowed; opacity: .5; }
+.message { min-height: 16px; text-align: center; color: #b4efff; margin: 8px 0 0; font-size: 11px; }
+footer { color: #7186a5; font-size: 10px; text-align: center; margin-top: 7px; }
